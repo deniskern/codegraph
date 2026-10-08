@@ -818,6 +818,11 @@ program
       process.exit(1);
     }
 
+    if (fs.existsSync(targetPath) && fs.realpathSync(sourcePath) === fs.realpathSync(targetPath)) {
+      error('Source and target are the same project; nothing to clone.');
+      process.exit(1);
+    }
+
     if (isInitialized(targetPath) && !options.force) {
       warn(`Target already has a CodeGraph index at ${getCodeGraphDir(targetPath)}; skipping.`);
       info('Pass --force to overwrite it.');
@@ -844,16 +849,23 @@ program
       const sourceDbPath = path.join(getCodeGraphDir(sourcePath), 'codegraph.db');
       const targetDbPath = path.join(targetCodeGraphDir, 'codegraph.db');
       // A file copy misses commits still in the source's WAL and can tear while its
-      // daemon checkpoints; VACUUM INTO reads one consistent snapshot instead. The
-      // target's old -wal/-shm must go too, or SQLite replays them over the new file.
-      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(targetDbPath + suffix, { force: true });
+      // daemon checkpoints; VACUUM INTO reads one consistent snapshot instead. It goes
+      // to a temp file first so a failed snapshot leaves an existing index intact.
+      const tmpDbPath = `${targetDbPath}.clone-tmp`;
+      fs.rmSync(tmpDbPath, { force: true });
       const { DatabaseSync } = require('node:sqlite');
       const sourceDb = new DatabaseSync(sourceDbPath, { readOnly: true });
       try {
-        sourceDb.prepare('VACUUM INTO ?').run(targetDbPath);
+        sourceDb.prepare('VACUUM INTO ?').run(tmpDbPath);
+      } catch (err) {
+        fs.rmSync(tmpDbPath, { force: true });
+        throw err;
       } finally {
         sourceDb.close();
       }
+      // The target's old -wal/-shm must go, or SQLite replays them over the new file.
+      for (const suffix of ['-wal', '-shm']) fs.rmSync(targetDbPath + suffix, { force: true });
+      fs.renameSync(tmpDbPath, targetDbPath);
       const size = fs.statSync(targetDbPath).size;
 
       success(`Copied CodeGraph index to ${targetPath} (${formatBytes(size)})`);

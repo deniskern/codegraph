@@ -75,4 +75,14 @@ describe('codegraph clone', () => {
     expect(probe(target)).toBe(42);
     expect(fs.existsSync(dbPath(target) + '-wal') && fs.statSync(dbPath(target) + '-wal').size > 0).toBe(false);
   });
+  it('creates a target directory that does not exist yet', () => {
+    const fresh = path.join(tempDir, 'fresh', 'worktree');
+    runCodegraph(['clone', '--source', source, fresh], tempDir);
+    expect(probe(fresh)).toBe(42);
+  });
+
+  it('refuses to clone a project onto itself and keeps its index', () => {
+    expect(() => runCodegraph(['clone', '--force', '--source', source, source], tempDir)).toThrow();
+    expect(probe(source)).toBe(42);
+  });
 });
