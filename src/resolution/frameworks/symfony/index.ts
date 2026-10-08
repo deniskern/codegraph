@@ -1,15 +1,11 @@
 import { Node } from '../../../types';
 import { FrameworkResolver, UnresolvedRef, ResolvedRef, ResolutionContext } from '../../types';
-import { stripCommentsForRegex } from '../../strip-comments';
-import { extractPath, extractMethods, extractName, extractDefaults, extractRequirements, extractHost, extractSchemes } from './attributes';
 import { parseControllerServiceRef, resolveControllerMethod } from './controller';
 import { isContainerFilePath } from './di';
 import { extractYamlRoutes } from './yaml';
-import { extractDoctrineEntities, extractDoctrineRepositories } from './doctrine';
-import { extractEventSubscribers } from './events';
-import { extractConsoleCommands } from './commands';
 import { extractTwigReferences } from './twig';
 import { extractContainerRoutes } from './container-routes';
+import { extractAttributeRoutes } from './attribute-routes';
 
 export const symfonyResolver: FrameworkResolver = {
   name: 'symfony',
@@ -24,10 +20,11 @@ export const symfonyResolver: FrameworkResolver = {
           'require-dev'?: Record<string, string>;
         };
         const deps = { ...json.require, ...(json['require-dev'] ?? {}) };
-        if (Object.keys(deps).some(k => k === 'symfony/framework-bundle' || k === 'symfony/symfony')) {
+        // Shopware 6 is a Symfony application; its plugins require only shopware/core
+        if (Object.keys(deps).some(k => k === 'symfony/framework-bundle' || k === 'symfony/symfony' || k === 'shopware/core')) {
           return true;
         }
-        if (Object.keys(deps).some(k => k.startsWith('symfony/') && k !== 'symfony/polyfill-*')) {
+        if (Object.keys(deps).some(k => k.startsWith('symfony/') && !k.startsWith('symfony/polyfill-'))) {
           const hasConsole = context.fileExists('bin/console');
           const hasConfig = context.fileExists('config/');
           if (hasConsole && hasConfig) return true;
@@ -65,76 +62,9 @@ export const symfonyResolver: FrameworkResolver = {
 
     // ── PHP ──────────────────────────────────────────────────────────────────
     if (filePath.endsWith('.php')) {
-      const safe = stripCommentsForRegex(content, 'php');
-
-      // Class-level #[Route] prefix
-      let classPrefix = '';
-      const classAttrMatch = safe.match(
-        /#\[\s*Route\s*\(([^)]*)\)\s*\](?:\s*\n\s*)*\b(?:final\s+)?(?:readonly\s+)?class\b/
-      );
-      if (classAttrMatch) {
-        const path = extractPath(classAttrMatch[1]!);
-        if (path) classPrefix = path;
-      }
-
-      // Method-level #[Route] — `[^)]*` stops at first `)`, can't bleed into next attribute
-      const methodRouteRegex =
-        /#\[\s*Route\s*\(([^)]*)\)\s*\](?:\s*\n\s*(?:#\[(?!\s*Route\s*\()[\s\S]*?\]\s*\n\s*)*)?(?:public|private|protected)\s+function\s+(\w+)\s*\(/g;
-      let match: RegExpExecArray | null;
-      while ((match = methodRouteRegex.exec(safe)) !== null) {
-        const args = match[1]!.trim();
-        const methodName = match[2]!;
-        const line = safe.slice(0, match.index).split('\n').length;
-        const path = extractPath(args);
-        const routeMethods = extractMethods(args);
-        const routeName = extractName(args);
-
-        if (!path) continue;
-
-        const fullPath = classPrefix ? classPrefix + path : path;
-        const httpMethods = routeMethods.length > 0 ? routeMethods : ['ANY'];
-
-        for (const httpMethod of httpMethods) {
-          const routeNode: Node = {
-            id: `route:${filePath}:${line}:${httpMethod}:${fullPath}`,
-            kind: 'route',
-            name: `${httpMethod} ${fullPath}`,
-            qualifiedName: routeName ? `${filePath}::${routeName}` : `${filePath}::route:${fullPath}`,
-            filePath,
-            startLine: line,
-            endLine: line,
-            startColumn: 0,
-            endColumn: match[0].length,
-            language: 'php',
-            updatedAt: now,
-          };
-
-          const defaults = extractDefaults(args);
-          const requirements = extractRequirements(args);
-          const host = extractHost(args);
-          const schemes = extractSchemes(args);
-          if (defaults || requirements || host || schemes) {
-            const meta: Record<string, unknown> = {};
-            if (defaults) meta.defaults = defaults;
-            if (requirements) meta.requirements = requirements;
-            if (host) meta.host = host;
-            if (schemes) meta.schemes = schemes;
-            routeNode.signature = JSON.stringify(meta);
-          }
-
-          nodes.push(routeNode);
-
-          references.push({
-            fromNodeId: routeNode.id,
-            referenceName: methodName,
-            referenceKind: 'references',
-            line,
-            column: 0,
-            filePath,
-            language: 'php',
-          });
-        }
-      }
+      const attrRoutes = extractAttributeRoutes(filePath, content, now);
+      nodes.push(...attrRoutes.nodes);
+      references.push(...attrRoutes.references);
 
       // ── Compiled DI container ─────────────────────────────────────────
       if (isContainerFilePath(filePath, content)) {
@@ -175,25 +105,6 @@ export const symfonyResolver: FrameworkResolver = {
         nodes.push(...containerRoutes.nodes);
         references.push(...containerRoutes.references);
       }
-
-      // ── Doctrine entities & repositories ──────────────────────────────
-      const entityResult = extractDoctrineEntities(content, filePath, now);
-      nodes.push(...entityResult.nodes);
-      references.push(...entityResult.references);
-
-      const repoResult = extractDoctrineRepositories(content, filePath, now);
-      nodes.push(...repoResult.nodes);
-      references.push(...repoResult.references);
-
-      // ── Event subscribers ─────────────────────────────────────────────
-      const eventResult = extractEventSubscribers(content, filePath, now);
-      nodes.push(...eventResult.nodes);
-      references.push(...eventResult.references);
-
-      // ── Console commands ──────────────────────────────────────────────
-      const cmdResult = extractConsoleCommands(content, filePath, now);
-      nodes.push(...cmdResult.nodes);
-      references.push(...cmdResult.references);
 
       // ── Twig template references ──────────────────────────────────────
       const twigResult = extractTwigReferences(content, filePath, now);

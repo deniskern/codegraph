@@ -177,7 +177,7 @@ describe('Symfony end-to-end — Doctrine entity detection', () => {
     tmpDir = undefined;
   });
 
-  it('detects Doctrine entities via #[Entity] attribute', async () => {
+  it('links an #[Entity] class to its attribute class without a duplicate class node', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-symfony-doctrine-'));
     fs.writeFileSync(
       path.join(tmpDir, 'composer.json'),
@@ -188,9 +188,23 @@ describe('Symfony end-to-end — Doctrine entity detection', () => {
     fs.mkdirSync(path.join(tmpDir, 'config'));
     fs.writeFileSync(path.join(tmpDir, 'config/packages'), '');
     fs.mkdirSync(path.join(tmpDir, 'src/Entity'), { recursive: true });
+    fs.mkdirSync(path.join(tmpDir, 'src/Mapping'), { recursive: true });
+    fs.writeFileSync(
+      path.join(tmpDir, 'src/Mapping/Entity.php'),
+      `<?php
+namespace App\\Mapping;
+
+#[\\Attribute]
+class Entity
+{
+}
+`
+    );
     fs.writeFileSync(
       path.join(tmpDir, 'src/Entity/BlogPost.php'),
       `<?php
+use App\\Mapping\\Entity;
+
 #[Entity]
 class BlogPost
 {
@@ -206,13 +220,13 @@ class BlogPost
     await cg.indexAll();
 
     const classes = cg.getNodesByKind('class');
-    const blogPost = classes.find(c => c.name === 'BlogPost');
-    expect(blogPost).toBeDefined();
+    const blogPosts = classes.filter(c => c.name === 'BlogPost');
+    expect(blogPosts).toHaveLength(1);
 
-    // The entity should also be findable by entity: prefix id
-    const entityNodes = classes.filter(c => c.id?.startsWith('entity:'));
-    expect(entityNodes.length).toBeGreaterThanOrEqual(1);
-    expect(entityNodes.some(e => e.name === 'BlogPost')).toBe(true);
+    const entityAttr = classes.find(c => c.name === 'Entity');
+    expect(entityAttr).toBeDefined();
+    const decorates = cg.getOutgoingEdges(blogPosts[0]!.id).filter(e => e.kind === 'decorates');
+    expect(decorates.map(e => e.target)).toContain(entityAttr!.id);
 
     cg.close();
   });
@@ -225,7 +239,7 @@ describe('Symfony end-to-end — console command detection', () => {
     tmpDir = undefined;
   });
 
-  it('detects commands via #[AsCommand] attribute', async () => {
+  it('indexes an #[AsCommand] class once', async () => {
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'cg-symfony-cmd-'));
     fs.writeFileSync(
       path.join(tmpDir, 'composer.json'),
@@ -253,14 +267,8 @@ class GenerateReportCommand extends Command
     const cg = CodeGraph.initSync(tmpDir);
     await cg.indexAll();
 
-    const classes = cg.getNodesByKind('class');
-    const cmd = classes.find(c => c.name === 'GenerateReportCommand');
-    expect(cmd).toBeDefined();
-    // The Symfony resolver emits a console_command: prefixed node AND the
-    // tree-sitter parser emits a separate class: prefixed node. Both exist.
-    const cmdResolverNodes = classes.filter(c => c.id?.startsWith('console_command:'));
-    expect(cmdResolverNodes.length).toBeGreaterThanOrEqual(1);
-    expect(cmdResolverNodes.some(n => n.name === 'GenerateReportCommand')).toBe(true);
+    const commands = cg.getNodesByKind('class').filter(c => c.name === 'GenerateReportCommand');
+    expect(commands).toHaveLength(1);
 
     cg.close();
   });
@@ -403,15 +411,9 @@ class App_KernelContainer extends Container
     const attrRoute = routes.find(r => r.name === 'ANY /');
     expect(attrRoute).toBeDefined();
 
-    // Console command detection
-    const commands = cg.getNodesByKind('class').filter(c => c.id?.startsWith('console_command:'));
-    expect(commands.length).toBeGreaterThanOrEqual(1);
-    expect(commands.some(c => c.name === 'TestCommand')).toBe(true);
-
-    // Entity detection
-    const entities = cg.getNodesByKind('class').filter(c => c.id?.startsWith('entity:'));
-    expect(entities.length).toBeGreaterThanOrEqual(1);
-    expect(entities.some(e => e.name === 'Product')).toBe(true);
+    // Framework detection adds no second node for a class the PHP extractor already indexed
+    const classKeys = cg.getNodesByKind('class').map(c => `${c.filePath}::${c.name}`);
+    expect(new Set(classKeys).size).toBe(classKeys.length);
 
     // DI container service extraction
     const services = cg.getNodesByKind('variable');

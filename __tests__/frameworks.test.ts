@@ -1,6 +1,13 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
+import { initGrammars, loadGrammarsForLanguages } from '../src/extraction/grammars';
 import type { FrameworkResolver, UnresolvedRef } from '../src/resolution/types';
 import type { Node } from '../src/types';
+
+// The Symfony #[Route] extractor reads the PHP AST
+beforeAll(async () => {
+  await initGrammars();
+  await loadGrammarsForLanguages(['php']);
+});
 
 describe('FrameworkResolver.extract interface', () => {
   it('extract() returns { nodes, references }', () => {
@@ -1737,6 +1744,17 @@ describe('symfonyResolver.detect', () => {
     expect(symfonyResolver.detect(context as any)).toBe(true);
   });
 
+  it('detects a Shopware plugin, which requires only shopware/core and has no bin/console', () => {
+    const context = {
+      ...baseContext,
+      readFile: (p: string) =>
+        p === 'composer.json'
+          ? JSON.stringify({ type: 'shopware-platform-plugin', require: { 'shopware/core': '~6.6.0' } })
+          : null,
+    };
+    expect(symfonyResolver.detect(context as any)).toBe(true);
+  });
+
   it('detects symfony/symfony in composer.json require-dev', () => {
     const context = {
       ...baseContext,
@@ -2166,6 +2184,75 @@ admin_dashboard:
   });
 });
 
+describe('symfonyResolver.extract — Shopware-style controllers', () => {
+  it('keeps the first method route after a path-less class-level #[Route]', () => {
+    const src = `<?php
+#[Route(defaults: ['_routeScope' => ['storefront']])]
+#[Package('storefront')]
+class AuthController extends StorefrontController
+{
+    #[Route(path: '/account/login', name: 'frontend.account.login.page', methods: ['GET'])]
+    public function loginPage(): Response {}
+
+    #[Route(path: '/account/register', name: 'frontend.account.register.page', methods: ['GET'])]
+    public function accountRegisterPage(): Response {}
+}
+`;
+    const { nodes, references } = symfonyResolver.extract!('src/Controller/AuthController.php', src);
+    expect(nodes.map(n => n.name)).toEqual(['GET /account/login', 'GET /account/register']);
+    expect(references.map(r => r.referenceName)).toEqual(['loginPage', 'accountRegisterPage']);
+  });
+
+  it('emits every stacked #[Route] of one action', () => {
+    const src = `<?php
+class AddressController
+{
+    #[Route(path: '/account/address/create', name: 'frontend.account.address.create', methods: ['POST'])]
+    #[Route(path: '/account/address/{addressId}', name: 'frontend.account.address.edit.save', methods: ['POST'])]
+    public function saveAddress(): Response {}
+}
+`;
+    const { nodes, references } = symfonyResolver.extract!('src/Controller/AddressController.php', src);
+    expect(nodes.map(n => n.name)).toEqual(['POST /account/address/create', 'POST /account/address/{addressId}']);
+    expect(references.every(r => r.referenceName === 'saveAddress')).toBe(true);
+  });
+
+  it('reads a multi-line #[Route] with nested defaults', () => {
+    const src = `<?php
+class CheckoutController
+{
+    #[Route(
+        path: '/checkout/update-phone',
+        name: 'frontend.checkout.update-phone',
+        defaults: [
+            'XmlHttpRequest' => true,
+            '_loginRequired' => true,
+        ],
+        methods: ['POST']
+    )]
+    public function updatePhone(): Response {}
+}
+`;
+    const { nodes } = symfonyResolver.extract!('src/Controller/CheckoutController.php', src);
+    expect(nodes.map(n => n.name)).toEqual(['POST /checkout/update-phone']);
+  });
+
+  it('does not read the directory of a nested resource import as a route', () => {
+    const src = `controllers:
+    resource:
+        path: ../src/Controller/
+        namespace: App\\Controller
+    type: attribute
+
+app_index:
+    path: /
+    controller: App\\Controller\\DefaultController::index
+`;
+    const { nodes } = symfonyResolver.extract!('config/routes.yaml', src);
+    expect(nodes.map(n => n.name)).toEqual(['ANY /']);
+  });
+});
+
 describe('symfonyResolver.extract — bundle service YAML', () => {
   it('extracts service references from vendor bundle services.yaml', () => {
     const src = `services:
@@ -2183,93 +2270,21 @@ describe('symfonyResolver.extract — bundle service YAML', () => {
   });
 });
 
-describe('symfonyResolver.extract — Doctrine entities', () => {
-  it('extracts entity from #[Entity] attribute', () => {
+describe('symfonyResolver.extract — no duplicate class nodes', () => {
+  it('leaves entity, repository, subscriber and command classes to the PHP extractor', () => {
     const src = `<?php
-#[Entity]
-class BlogPost
-{
-    #[Id, Column(type: 'integer'), GeneratedValue]
-    private int \$id;
-}
-`;
-    const { nodes } = symfonyResolver.extract!('src/Entity/BlogPost.php', src);
-    const entity = nodes.find(n => n.id?.startsWith('entity:'));
-    expect(entity).toBeDefined();
-    expect(entity!.kind).toBe('class');
-    expect(entity!.name).toBe('BlogPost');
-  });
+#[ORM\\Entity(repositoryClass: PostRepository::class)]
+class Post {}
 
-  it('extracts entity from #[ORM\\\\Entity] attribute', () => {
-    const src = `<?php
-#[ORM\\Entity]
-class Category
-{
-    #[ORM\\Id, ORM\\Column(type: 'integer'), ORM\\GeneratedValue]
-    private int \$id;
-}
-`;
-    const { nodes } = symfonyResolver.extract!('src/Entity/Category.php', src);
-    const entity = nodes.find(n => n.id?.startsWith('entity:'));
-    expect(entity).toBeDefined();
-    expect(entity!.name).toBe('Category');
-  });
-});
+class PostRepository extends ServiceEntityRepository {}
 
-describe('symfonyResolver.extract — Doctrine repositories', () => {
-  it('extracts repository extending ServiceEntityRepository', () => {
-    const src = `<?php
-class BlogPostRepository extends ServiceEntityRepository
-{
-    public function __construct(ManagerRegistry \$registry)
-    {
-        parent::__construct(\$registry, BlogPost::class);
-    }
-}
-`;
-    const { nodes } = symfonyResolver.extract!('src/Repository/BlogPostRepository.php', src);
-    const repo = nodes.find(n => n.id?.startsWith('repository:'));
-    expect(repo).toBeDefined();
-    expect(repo!.name).toBe('BlogPostRepository');
-  });
-});
+class PostSubscriber implements EventSubscriberInterface {}
 
-describe('symfonyResolver.extract — event subscribers', () => {
-  it('extracts class implementing EventSubscriberInterface', () => {
-    const src = `<?php
-class ExceptionSubscriber implements EventSubscriberInterface
-{
-    public static function getSubscribedEvents()
-    {
-        return [KernelEvents::EXCEPTION => 'onKernelException'];
-    }
-
-    public function onKernelException(ExceptionEvent \$event): void {}
-}
+#[AsCommand(name: 'app:posts')]
+class PostCommand extends Command {}
 `;
-    const { nodes } = symfonyResolver.extract!('src/EventSubscriber/ExceptionSubscriber.php', src);
-    const sub = nodes.find(n => n.id?.startsWith('event_subscriber:'));
-    expect(sub).toBeDefined();
-    expect(sub!.name).toBe('ExceptionSubscriber');
-  });
-});
-
-describe('symfonyResolver.extract — console commands', () => {
-  it('extracts command with #[AsCommand] attribute', () => {
-    const src = `<?php
-#[AsCommand(name: 'app:generate-report')]
-class GenerateReportCommand extends Command
-{
-    protected function execute(InputInterface \$input, OutputInterface \$output): int
-    {
-        return Command::SUCCESS;
-    }
-}
-`;
-    const { nodes } = symfonyResolver.extract!('src/Command/GenerateReportCommand.php', src);
-    const cmd = nodes.find(n => n.id?.startsWith('console_command:'));
-    expect(cmd).toBeDefined();
-    expect(cmd!.name).toBe('GenerateReportCommand');
+    const { nodes } = symfonyResolver.extract!('src/Post.php', src);
+    expect(nodes.filter(n => n.kind === 'class')).toEqual([]);
   });
 });
 

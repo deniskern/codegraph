@@ -18,9 +18,11 @@ export function extractYamlRoutes(
   let currentController: string | null = null;
   let currentMethods: string[] = [];
   let currentPrefix: string | null = null;
+  let routeChildIndent: number | null = null;
+  let isImport = false;
 
   const flushRoute = () => {
-    if (!currentRoute || !currentPathVal) return;
+    if (!currentRoute || !currentPathVal || isImport) return;
     const effectivePath = currentPrefix ? currentPrefix + currentPathVal : currentPathVal;
     const httpMethods = currentMethods.length > 0 ? currentMethods : ['ANY'];
     for (const httpMethod of httpMethods) {
@@ -73,6 +75,8 @@ export function extractYamlRoutes(
       currentController = null;
       currentMethods = [];
       currentPrefix = null;
+      routeChildIndent = null;
+      isImport = false;
       inServicesBlock = key === 'services';
 
       if (!val || val.startsWith('#')) {
@@ -84,9 +88,13 @@ export function extractYamlRoutes(
       continue;
     }
 
-    // Sub-key of current route
-    if (currentRoute && !inServicesBlock) {
-      if (key === 'path') {
+    // Sub-key of current route — only its direct children; `resource: { path: … }`
+    // nests a directory path that is not the route's own
+    if (currentRoute && !inServicesBlock && (routeChildIndent ?? indent) === indent) {
+      routeChildIndent = indent;
+      if (key === 'resource') {
+        isImport = true;
+      } else if (key === 'path') {
         const subVal = val.replace(/^['"]|['"]$/g, '').replace(/\s+#.*$/, '');
         if (subVal) currentPathVal = subVal;
       } else if (key === 'controller') {
