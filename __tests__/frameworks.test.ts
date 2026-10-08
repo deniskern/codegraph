@@ -2227,6 +2227,7 @@ class CheckoutController
         defaults: [
             'XmlHttpRequest' => true,
             '_loginRequired' => true,
+            '_template' => 'checkout/phone.html.twig',
         ],
         methods: ['POST']
     )]
@@ -2235,6 +2236,7 @@ class CheckoutController
 `;
     const { nodes } = symfonyResolver.extract!('src/Controller/CheckoutController.php', src);
     expect(nodes.map(n => n.name)).toEqual(['POST /checkout/update-phone']);
+    expect(JSON.parse(nodes[0]!.signature!).defaults).toEqual({ _template: 'checkout/phone.html.twig' });
   });
 
   it('does not read the directory of a nested resource import as a route', () => {

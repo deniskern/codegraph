@@ -123,10 +123,13 @@ function routeAttributes(decl: SyntaxNode): SyntaxNode[] {
   return out;
 }
 
-/** The attribute's argument list without its parentheses, as the arg helpers expect. */
+/**
+ * The attribute's argument list without its parentheses, on one line: the arg
+ * helpers' regexes do not cross newlines, and a multi-line `defaults: [` is common.
+ */
 function argsText(attr: SyntaxNode): string {
   const args = attr.childForFieldName('parameters') ?? attr.namedChildren.find((c) => c?.type === 'arguments');
-  return args ? args.text.replace(/^\(|\)$/g, '').trim() : '';
+  return args ? args.text.replace(/^\(|\)$/g, '').replace(/\s+/g, ' ').trim() : '';
 }
 
 function walk(node: SyntaxNode, fn: (node: SyntaxNode) => void): void {
