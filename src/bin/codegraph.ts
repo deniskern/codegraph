@@ -843,7 +843,17 @@ program
 
       const sourceDbPath = path.join(getCodeGraphDir(sourcePath), 'codegraph.db');
       const targetDbPath = path.join(targetCodeGraphDir, 'codegraph.db');
-      fs.copyFileSync(sourceDbPath, targetDbPath);
+      // A file copy misses commits still in the source's WAL and can tear while its
+      // daemon checkpoints; VACUUM INTO reads one consistent snapshot instead. The
+      // target's old -wal/-shm must go too, or SQLite replays them over the new file.
+      for (const suffix of ['', '-wal', '-shm']) fs.rmSync(targetDbPath + suffix, { force: true });
+      const { DatabaseSync } = require('node:sqlite');
+      const sourceDb = new DatabaseSync(sourceDbPath, { readOnly: true });
+      try {
+        sourceDb.prepare('VACUUM INTO ?').run(targetDbPath);
+      } finally {
+        sourceDb.close();
+      }
       const size = fs.statSync(targetDbPath).size;
 
       success(`Copied CodeGraph index to ${targetPath} (${formatBytes(size)})`);
