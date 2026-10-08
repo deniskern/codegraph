@@ -18,6 +18,9 @@ export function extractAttributeRoutes(
   const nodes: Node[] = [];
   const references: UnresolvedRef[] = [];
 
+  // A second parse per PHP file is only worth it when a Route attribute can be there.
+  if (!content.includes('Route')) return { nodes, references };
+
   const parser = getParser('php');
   if (!parser) return { nodes, references };
   const tree = parser.parse(content);
