@@ -2939,7 +2939,8 @@ export class TreeSitterExtractor {
           child.type === 'navigation_expression' ||
           child.type === 'user_type' ||      // swift attribute → user_type (`@Argument`)
           child.type === 'type_identifier' ||
-          child.type === 'name'              // php attribute → name
+          child.type === 'name' ||           // php attribute → name
+          child.type === 'qualified_name'    // php attribute → `ORM\Entity`
         ) {
           target = child;
           break;
@@ -2949,8 +2950,8 @@ export class TreeSitterExtractor {
       let name = getNodeText(target, this.source);
       const lt = name.indexOf('<'); // strip generic args: `@Argument<T>` → `Argument`
       if (lt > 0) name = name.slice(0, lt);
-      const lastDot = Math.max(name.lastIndexOf('.'), name.lastIndexOf('::'));
-      if (lastDot >= 0) name = name.slice(lastDot + 1).replace(/^[:.]/, '');
+      const lastDot = Math.max(name.lastIndexOf('.'), name.lastIndexOf('::'), name.lastIndexOf('\\'));
+      if (lastDot >= 0) name = name.slice(lastDot + 1).replace(/^[:.\\]/, '');
       name = name.trim();
       if (!name) return;
       this.unresolvedReferences.push({
@@ -2975,10 +2976,13 @@ export class TreeSitterExtractor {
         for (let j = 0; j < child.namedChildCount; j++) {
           consider(child.namedChild(j));
         }
-      } else if (child.type === 'attribute_declaration') {
-        // PHP wraps `attribute` nodes inside `attribute_declaration` containers
+      } else if (child.type === 'attribute_list') {
+        // PHP nests `#[A, B]` as attribute_list → attribute_group → attribute
         for (let j = 0; j < child.namedChildCount; j++) {
-          consider(child.namedChild(j));
+          const group = child.namedChild(j);
+          for (let k = 0; group && k < group.namedChildCount; k++) {
+            consider(group.namedChild(k));
+          }
         }
       } else {
         consider(child);
@@ -3012,17 +3016,10 @@ export class TreeSitterExtractor {
         for (let j = declIdx - 1; j >= 0; j--) {
           const sibling = parent.namedChild(j);
           if (!sibling) continue;
-          if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation' && sibling.type !== 'attribute' && sibling.type !== 'attribute_declaration') {
+          if (sibling.type !== 'decorator' && sibling.type !== 'annotation' && sibling.type !== 'marker_annotation' && sibling.type !== 'attribute') {
             break; // non-decorator separator → stop consuming
           }
-          // PHP wraps `attribute` nodes inside `attribute_declaration`
-          if (sibling.type === 'attribute_declaration') {
-            for (let k = 0; k < sibling.namedChildCount; k++) {
-              consider(sibling.namedChild(k));
-            }
-          } else {
-            consider(sibling);
-          }
+          consider(sibling);
         }
       }
     }
